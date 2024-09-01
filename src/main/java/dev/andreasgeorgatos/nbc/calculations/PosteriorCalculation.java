@@ -1,84 +1,137 @@
 package dev.andreasgeorgatos.nbc.calculations;
 
-import dev.andreasgeorgatos.nbc.data.Attribute;
 import dev.andreasgeorgatos.nbc.data.DataManager;
+import dev.andreasgeorgatos.nbc.data.attributes.AttributeDescription;
+import dev.andreasgeorgatos.nbc.data.attributes.AttributeType;
+import dev.andreasgeorgatos.nbc.data.likelihood.LikelihoodData;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Scanner;
+import java.util.Set;
 
 public class PosteriorCalculation {
-    private final DataManager dataManager;
-    private final PriorCalculation priorCalculation;
-    private final LikelihoodCalculation likelihoodCalculation;
 
-    public PosteriorCalculation(DataManager dataManager, PriorCalculation priorCalculation, LikelihoodCalculation likelihoodCalculation) {
-        this.dataManager = dataManager;
-        this.priorCalculation = priorCalculation;
-        this.likelihoodCalculation = likelihoodCalculation;
-        Map<Attribute, Object> input = getInputFromKeyboard();
-        printPosteriorProbabilities(input);
-    }
+    private final Logger logger = LoggerFactory.getLogger(PosteriorCalculation.class);
 
-    public Map<Object, Double> calculatePosteriorProbabilities(Map<Attribute, Object> input) {
-        Map<Object, Double> posteriorProbabilities = new HashMap<>();
-        Map<Attribute, Map<Object, Map<Object, Double>>> conditionalProbabilities = likelihoodCalculation.getConditionalProbabilities();
-        Map<Object, Double> priorProbabilities = priorCalculation.getPriorProbabilities();
+    public void printPosteriorProbability(Set<AttributeDescription> attributeDescription, DataManager dataManager) {
+        Map<Object, Double> probabilities = calculatePosteriorProbability(attributeDescription, dataManager);
 
-        for (Object possibleResult : dataManager.getAllPossibleResults()) {
-            double posterior = 1.0;
-            for (Map.Entry<Attribute, Object> entry : input.entrySet()) {
-                Attribute attribute = entry.getKey();
-                Object value = entry.getValue();
-                double conditionalProbability = conditionalProbabilities.get(attribute).get(value).get(possibleResult);
-                posterior *= conditionalProbability;
-            }
-            double priorProbability = priorProbabilities.getOrDefault(possibleResult, 0.0);
-            posterior *= priorProbability;
-            posteriorProbabilities.put(possibleResult, posterior);
+        for (Map.Entry<Object, Double> entry : probabilities.entrySet()) {
+            System.out.println("Posterior probability of class " + entry.getKey() + ": " + entry.getValue());
         }
-        return normalize(posteriorProbabilities);
     }
 
-    private Map<Object, Double> normalize(Map<Object, Double> posteriorProbabilities) {
-        double sum = posteriorProbabilities.values().stream().mapToDouble(Double::doubleValue).sum();
-        posteriorProbabilities.replaceAll((key, value) -> value / sum);
+    public Map<Object, Double> calculatePosteriorProbability(Set<AttributeDescription> attributeDescription, DataManager dataManager) {
+        Map<AttributeDescription, Object> userInput = getInputFromKeyboard(attributeDescription);
+
+        Map<Object, Double> posteriorProbabilities = new HashMap<>();
+
+        for (LikelihoodData likelihood : dataManager.getLikelihoodData()) {
+            posteriorProbabilities.put(likelihood.getClassValue(), 1.0);
+        }
+
+        for (Map.Entry<AttributeDescription, Object> entry : userInput.entrySet()) {
+            for (LikelihoodData likelihood : dataManager.getLikelihoodData()) {
+                if (likelihood.getAttributeDescription().equals(entry.getKey())) {
+                    double currentProbability = posteriorProbabilities.get(likelihood.getClassValue());
+                    if (likelihood.getAttributeDescription().type() == AttributeType.DISTINCT) {
+                        if (likelihood.getAttributeValue().equals(entry.getValue())) {
+                            posteriorProbabilities.put(likelihood.getClassValue(), currentProbability * likelihood.getConditionalProbability());
+                        }
+                    } else if (likelihood.getAttributeDescription().type() == AttributeType.CONTINUOUS) {
+                        double mean = likelihood.getMean();
+                        double variance = likelihood.getVariance();
+                        double value = Double.parseDouble((String) entry.getValue());
+
+                        double normalDistribution = calculateNormalDistribution(value, mean, variance);
+                        posteriorProbabilities.put(likelihood.getClassValue(), currentProbability * normalDistribution);
+                    }
+                }
+            }
+        }
+
+        for (Map.Entry<Object, Double> prior : dataManager.getPriorProbabilities().entrySet()) {
+            for (Map.Entry<Object, Double> posterior : posteriorProbabilities.entrySet()) {
+                if (posterior.getKey().equals(prior.getKey())) {
+                    posterior.setValue(posterior.getValue() * prior.getValue());
+                }
+            }
+        }
+
+        double totalProbability = posteriorProbabilities.values().stream().mapToDouble(Double::doubleValue).sum();
+
+        for (Map.Entry<Object, Double> entry : posteriorProbabilities.entrySet()) {
+            posteriorProbabilities.put(entry.getKey(), entry.getValue() / totalProbability);
+        }
+
         return posteriorProbabilities;
     }
 
-    public void printPosteriorProbabilities(Map<Attribute, Object> input) {
-        Map<Object, Double> posteriorProbabilities = calculatePosteriorProbabilities(input);
-        System.out.println("Posterior Probabilities:");
-        posteriorProbabilities.forEach((result, probability) -> {
-            System.out.println(String.format("Class: %s, Probability: %.4f", result, probability));
-        });
+    private double calculateNormalDistribution(double value, double mean, double variance) {
+        double exponent = Math.exp(-((value - mean) * (value - mean)) / (2 * variance));
+        return (1 / Math.sqrt(2 * Math.PI * variance)) * exponent;
     }
 
-    private Map<Attribute, Object> getInputFromKeyboard() {
+
+    public Map<AttributeDescription, Object> getInputFromKeyboard(Set<AttributeDescription> attributeDescription) {
         Scanner scanner = new Scanner(System.in);
-        Map<Attribute, Object> input = new HashMap<>();
+        Map<AttributeDescription, Object> data = new HashMap<>();
 
-        System.out.println("Please provide the attribute values:");
-        for (Attribute attribute : dataManager.getAttributes()) {
-            System.out.print("Enter value for " + attribute.getAttributeName() + ": ");
-            String value = scanner.nextLine();
-            Object parsedValue = parseData(value);
-            input.put(attribute, parsedValue);
-        }
+        for (AttributeDescription attribute : attributeDescription) {
+            if (attribute.type() == AttributeType.DISTINCT) {
+                System.out.println("Input data for attribute: " + attribute.name() + " you are only allowed to input the following data: " + attribute.allowedAttributeValues());
+                String inputData = scanner.nextLine();
 
-        return input;
-    }
 
-    private Object parseData(String data) {
-        data = data.trim().toLowerCase();
-        try {
-            return Integer.parseInt(data);
-        } catch (NumberFormatException e) {
-            try {
-                return Double.parseDouble(data);
-            } catch (NumberFormatException ex) {
-                return data;
+                while (!attribute.allowedAttributeValues().contains(inputData)) {
+                    System.out.println("Please input the correct data: " + attribute.allowedAttributeValues());
+                    inputData = scanner.nextLine();
+                }
+                data.put(attribute, inputData);
+            } else if (attribute.type() == AttributeType.CONTINUOUS) {
+                System.out.println("Input data for attribute: " + attribute.name() +
+                        ". You are only allowed to input a value between " +
+                        attribute.allowedAttributeValues().get(0) + " and " +
+                        attribute.allowedAttributeValues().get(1) + ".");
+
+                String inputData = scanner.nextLine();
+                double inputValue = 0;
+
+                double minValue = (double) attribute.allowedAttributeValues().get(0);
+                double maxValue = (double) attribute.allowedAttributeValues().get(1);
+
+                boolean validInput = false;
+
+                try {
+                    inputValue = Double.parseDouble(inputData);
+                    if (inputValue >= minValue && inputValue <= maxValue) {
+                        validInput = true;
+                    }
+                } catch (NumberFormatException e) {
+                    logger.warn("That's not a number.");
+                }
+
+                while (!validInput) {
+                    System.out.println("Please input a value between " + minValue + " and " + maxValue + ":");
+                    inputData = scanner.nextLine();
+
+                    try {
+                        inputValue = Double.parseDouble(inputData);
+                        if (inputValue >= minValue && inputValue <= maxValue) {
+                            validInput = true;
+                        }
+                    } catch (NumberFormatException e) {
+                        logger.warn("That's not a number.");
+                    }
+                }
+                data.put(attribute, inputData);
             }
         }
+        return data;
+
     }
+
 }

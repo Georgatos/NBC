@@ -1,4 +1,4 @@
-package dev.andreasgeorgatos.nbc.data;
+package dev.andreasgeorgatos.nbc.data.attributes;
 
 public enum AttributeType {
     DISTINCT("D"),
